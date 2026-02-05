@@ -147,9 +147,9 @@ def generate_quiz_words(api_key, rank_prompt, rank_name_for_db):
         return json.loads(response.text)
 
     except Exception as e:
-        # ★ここでエラー内容を画面に出す！
         st.error(f"⚠️ AIエラー発生: {e}")
-        # エラーが出てもゲームは止まらないようにDBから取る
+        st.warning("10秒後にオフラインモード（DB単語帳）に切り替わります...")
+        time.sleep(10)
         return get_fallback_words_from_db(rank_name_for_db)
     
 

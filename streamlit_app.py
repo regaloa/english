@@ -140,7 +140,7 @@ def generate_quiz_words(api_key, rank_prompt, rank_name_for_db):
         """
         
         response = client.models.generate_content(
-            model="gemini-1.5-flash",
+            model="gemini-1.5-flash-001",
             contents=prompt,
             config=types.GenerateContentConfig(response_mime_type="application/json")
         )

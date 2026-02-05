@@ -128,26 +128,30 @@ def generate_quiz_words(api_key, rank_prompt, rank_name_for_db):
     """AIに単語リストを作らせる (失敗したらDBから取る)"""
     if not api_key:
         return get_fallback_words_from_db(rank_name_for_db)
-
-    client = genai.Client(api_key=api_key)
-    
-    prompt = f"""
-    Generate 8 unique English vocabulary words specifically for {rank_prompt}.
-    The words should be commonly found in TOEIC tests but NOT exceeding the 750 score level.
-    Output MUST be a valid JSON list of objects with 'en' (English word) and 'jp' (Japanese meaning).
-    Example: [{{"en": "Profit", "jp": "利益"}}, {{"en": "Hire", "jp": "雇う"}}]
-    Just the raw JSON string.
-    """
-    
     try:
+        client = genai.Client(api_key=api_key)
+        
+        prompt = f"""
+        Generate 8 unique English vocabulary words specifically for {rank_prompt}.
+        The words should be commonly found in TOEIC tests but NOT exceeding the 750 score level.
+        Output MUST be a valid JSON list of objects with 'en' (English word) and 'jp' (Japanese meaning).
+        Example: [{{"en": "Profit", "jp": "利益"}}, {{"en": "Hire", "jp": "雇う"}}]
+        Just the raw JSON string.
+        """
+        
         response = client.models.generate_content(
             model="gemini-1.5-flash",
             contents=prompt,
             config=types.GenerateContentConfig(response_mime_type="application/json")
         )
         return json.loads(response.text)
-    except:
+
+    except Exception as e:
+        # ★ここでエラー内容を画面に出す！
+        st.error(f"⚠️ AIエラー発生: {e}")
+        # エラーが出てもゲームは止まらないようにDBから取る
         return get_fallback_words_from_db(rank_name_for_db)
+    
 
 def get_english_story(api_key, words):
     """英語の物語生成"""

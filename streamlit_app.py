@@ -4,12 +4,11 @@ import random
 import time
 import json
 import requests
-from google import genai
-from google.genai import types
+import google.generativeai as genai  # ★変更: 安定版ライブラリ
 from supabase import create_client
 
 # ==========================================
-# 0. アプリ基本設定 (これが一番上にないといけない)
+# 0. アプリ基本設定
 # ==========================================
 st.set_page_config(page_title="Pokémon English Battle", layout="wide")
 
@@ -83,7 +82,7 @@ def get_random_pokemon_data(rank_index):
             poke_id = random.randint(387, 1000) 
 
         url = f"https://pokeapi.co/api/v2/pokemon/{poke_id}"
-        res = requests.get(url, timeout=3) # タイムアウト設定でフリーズ防止
+        res = requests.get(url, timeout=3)
         if res.status_code == 200:
             data = res.json()
             img_url = data["sprites"]["front_default"]
@@ -112,7 +111,7 @@ def get_fallback_words_from_db(rank_name):
     except Exception:
         pass
     
-    # 最終手段（DB接続もダメな場合）
+    # 最終手段
     return [
         {"en": "Error", "jp": "エラー"},
         {"en": "Retry", "jp": "再読込"},
@@ -125,49 +124,57 @@ def get_fallback_words_from_db(rank_name):
     ]
 
 def generate_quiz_words(api_key, rank_prompt, rank_name_for_db):
-    """AIに単語リストを作らせる (失敗したらDBから取る)"""
+    """AIに単語リストを作らせる (google-generativeai版)"""
     if not api_key:
         return get_fallback_words_from_db(rank_name_for_db)
+
     try:
-        client = genai.Client(api_key=api_key)
+        # ★変更: 安定版ライブラリの設定方法
+        genai.configure(api_key=api_key)
+        
+        # モデル指定 (gemini-1.5-flash)
+        model = genai.GenerativeModel("gemini-1.5-flash")
         
         prompt = f"""
         Generate 8 unique English vocabulary words specifically for {rank_prompt}.
         The words should be commonly found in TOEIC tests but NOT exceeding the 750 score level.
         Output MUST be a valid JSON list of objects with 'en' (English word) and 'jp' (Japanese meaning).
         Example: [{{"en": "Profit", "jp": "利益"}}, {{"en": "Hire", "jp": "雇う"}}]
-        Just the raw JSON string.
+        Just the raw JSON string without markdown code blocks.
         """
         
-        response = client.models.generate_content(
-            model="gemini-1.5-flash-001",
-            contents=prompt,
-            config=types.GenerateContentConfig(response_mime_type="application/json")
+        # JSONモードを明示的に指定
+        response = model.generate_content(
+            prompt,
+            generation_config={"response_mime_type": "application/json"}
         )
         return json.loads(response.text)
 
     except Exception as e:
-        st.error(f"⚠️ AIエラー発生: {e}")
-        st.warning("10秒後にオフラインモード（DB単語帳）に切り替わります...")
-        time.sleep(10)
+        # エラー時は静かにDBモードへ切り替え
+        print(f"AI Error: {e}") # ログ用
+        st.toast("⚠️ AI接続エラー: オフラインモードで出題します")
         return get_fallback_words_from_db(rank_name_for_db)
-    
 
 def get_english_story(api_key, words):
     """英語の物語生成"""
     if not api_key: return "Story generation skipped (Needs AI Key)."
-    client = genai.Client(api_key=api_key)
-    prompt = f"""
-    Write a short and **simple** Pokémon-style adventure story in English using these words: {', '.join(words)}.
-    The English level should be easy to read (suitable for TOEIC 600 learners).
-    Highlight the used words in **bold**.
-    Keep it under 100 words.
-    """
+    
     try:
-        response = client.models.generate_content(model="gemini-1.5-flash", contents=prompt)
+        genai.configure(api_key=api_key)
+        model = genai.GenerativeModel("gemini-1.5-flash")
+        
+        prompt = f"""
+        Write a short and **simple** Pokémon-style adventure story in English using these words: {', '.join(words)}.
+        The English level should be easy to read (suitable for TOEIC 600 learners).
+        Highlight the used words in **bold**.
+        Keep it under 100 words.
+        """
+        
+        response = model.generate_content(prompt)
         return response.text
     except:
-        return "Failed to generate story."
+        return "Failed to generate story (AI Error)."
 
 # --- DB操作 ---
 
@@ -286,7 +293,7 @@ def main():
             st.info("まだポケモンを捕まえていません。")
 
     # メイン画面
-    st.title("◓ ポケモン英単語ゲーム")
+    st.title("◓ ポケモン英単語バトル")
     
     if "game_state" not in st.session_state:
         st.session_state.game_state = "IDLE"
@@ -315,6 +322,7 @@ def main():
                 with st.spinner("草むらから単語を探しています..."):
                     rank_idx = rank_keys.index(selected_rank_name)
                     pid, pimg = get_random_pokemon_data(rank_idx)
+                    # DBフォールバック用に選択されたランク名を渡す
                     quiz_data = generate_quiz_words(api_key, RANK_MAP[selected_rank_name], selected_rank_name)
                     init_game(quiz_data, 30, mode="NORMAL", poke_id=pid, poke_img=pimg) 
                     st.rerun()
@@ -385,7 +393,7 @@ def main():
                 time.sleep(0.5)
                 st.rerun()
             else:
-                st.error(f"ああっ！逃げられた！ ({c1['text']} ≠ {c2['text']})")
+                st.error(f"ミス！ ({c1['text']} ≠ {c2['text']})")
                 if st.session_state.current_mode == "NORMAL":
                     save_mistake(c1["id"], c1["pair"] if not c1["is_jp"] else c1["text"])
                     if not any(m["en"] == c1["id"] for m in st.session_state.mistakes_now):

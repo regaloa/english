@@ -152,8 +152,9 @@ def generate_quiz_words(api_key, rank_prompt, rank_name_for_db):
 
     except Exception as e:
         # エラー時は静かにDBモードへ切り替え
-        print(f"AI Error: {e}") # ログ用
-        st.toast("⚠️ AI接続エラー: オフラインモードで出題します")
+        st.error(f"⚠️ AIエラー発生: {e}")
+        st.warning("10秒後にオフラインモード（DB単語帳）に切り替わります...")
+        time.sleep(10)
         return get_fallback_words_from_db(rank_name_for_db)
 
 def get_english_story(api_key, words):

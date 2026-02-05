@@ -4,7 +4,7 @@ import random
 import time
 import json
 import requests
-import google.generativeai as genai  # ★変更: 安定版ライブラリ
+import google.generativeai as genai
 from supabase import create_client
 
 # ==========================================
@@ -29,7 +29,6 @@ RANK_TAGS = {
     "マスターボール級 (難関: 700点+)": "master"
 }
 
-# Secretsの読み込み確認
 try:
     SUPABASE_URL = st.secrets["supabase"]["url"]
     SUPABASE_KEY = st.secrets["supabase"]["key"]
@@ -99,7 +98,6 @@ def get_fallback_words_from_db(rank_name):
         res = supabase.table("toeic_words").select("word_en, word_jp").eq("rank_level", target_level).execute()
         data = res.data
         
-        # データ不足時は全データから補充
         if len(data) < 8:
             res_all = supabase.table("toeic_words").select("word_en, word_jp").execute()
             data = res_all.data
@@ -111,7 +109,6 @@ def get_fallback_words_from_db(rank_name):
     except Exception:
         pass
     
-    # 最終手段
     return [
         {"en": "Error", "jp": "エラー"},
         {"en": "Retry", "jp": "再読込"},
@@ -124,37 +121,35 @@ def get_fallback_words_from_db(rank_name):
     ]
 
 def generate_quiz_words(api_key, rank_prompt, rank_name_for_db):
-    """AIに単語リストを作らせる (google-generativeai版)"""
+    """AIに単語リストを作らせる (gemini-pro使用)"""
     if not api_key:
         return get_fallback_words_from_db(rank_name_for_db)
 
     try:
-        # ★変更: 安定版ライブラリの設定方法
         genai.configure(api_key=api_key)
-        
-        # モデル指定 (gemini-1.5-flash)
-        model = genai.GenerativeModel("gemini-1.5-flash")
+        # ★変更: 最も安定している gemini-pro を使用
+        model = genai.GenerativeModel("gemini-pro")
         
         prompt = f"""
         Generate 8 unique English vocabulary words specifically for {rank_prompt}.
         The words should be commonly found in TOEIC tests but NOT exceeding the 750 score level.
         Output MUST be a valid JSON list of objects with 'en' (English word) and 'jp' (Japanese meaning).
         Example: [{{"en": "Profit", "jp": "利益"}}, {{"en": "Hire", "jp": "雇う"}}]
-        Just the raw JSON string without markdown code blocks.
+        IMPORTANT: Output ONLY the raw JSON string. Do not include markdown formatting like ```json.
         """
         
-        # JSONモードを明示的に指定
-        response = model.generate_content(
-            prompt,
-            generation_config={"response_mime_type": "application/json"}
-        )
-        return json.loads(response.text)
+        # ★変更: 設定パラメータを削除し、シンプルに呼び出す
+        response = model.generate_content(prompt)
+        
+        # ★追加: AIが余計な文字をつけてきた場合に掃除する処理
+        text = response.text
+        text = text.replace("```json", "").replace("```", "").strip()
+        
+        return json.loads(text)
 
     except Exception as e:
-        # エラー時は静かにDBモードへ切り替え
-        st.error(f"⚠️ AIエラー発生: {e}")
-        st.warning("10秒後にオフラインモード（DB単語帳）に切り替わります...")
-        time.sleep(10)
+        print(f"AI Error: {e}") 
+        st.toast(f"⚠️ AI接続エラー: {e}") # 詳細をトーストに出す
         return get_fallback_words_from_db(rank_name_for_db)
 
 def get_english_story(api_key, words):
@@ -163,7 +158,8 @@ def get_english_story(api_key, words):
     
     try:
         genai.configure(api_key=api_key)
-        model = genai.GenerativeModel("gemini-1.5-flash")
+        # ★変更: こちらも gemini-pro に統一
+        model = genai.GenerativeModel("gemini-pro")
         
         prompt = f"""
         Write a short and **simple** Pokémon-style adventure story in English using these words: {', '.join(words)}.
@@ -267,7 +263,6 @@ def init_game(word_list, time_limit, mode="NORMAL", poke_id=None, poke_img=None)
 # 4. アプリ本体
 # ==========================================
 def main():
-    # サイドバー
     st.sidebar.title("⚙️ メニュー")
     api_key = st.sidebar.text_input("Gemini API Key", type="password")
     
@@ -279,7 +274,6 @@ def main():
     m_count = get_mistakes_count()
     st.sidebar.error(f"💀 苦手な単語: {m_count} 語")
     
-    # 図鑑
     st.sidebar.divider()
     with st.sidebar.expander("📖 ポケモン図鑑 (Pokedex)"):
         my_pokedex = get_my_pokedex()
@@ -287,19 +281,17 @@ def main():
             st.write(f"現在の発見数: **{len(my_pokedex)}** 匹")
             cols = st.columns(3)
             for i, pid in enumerate(my_pokedex):
-                img_url = f"https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/{pid}.png"
+                img_url = f"[https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/](https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/){pid}.png"
                 with cols[i % 3]:
                     st.image(img_url, width=70)
         else:
             st.info("まだポケモンを捕まえていません。")
 
-    # メイン画面
     st.title("◓ ポケモン英単語バトル")
     
     if "game_state" not in st.session_state:
         st.session_state.game_state = "IDLE"
 
-    # A. スタート画面
     if st.session_state.game_state == "IDLE":
         if "復習モード" in selected_rank_name:
             if m_count == 0:
@@ -311,7 +303,7 @@ def main():
                     if not revenge_words:
                         st.error("データ取得失敗")
                     else:
-                        init_game(revenge_words, 40, mode="REVENGE", poke_id=132, poke_img="https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/132.png")
+                        init_game(revenge_words, 40, mode="REVENGE", poke_id=132, poke_img="[https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/132.png](https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/132.png)")
                         st.rerun()
         else:
             st.write(f"**{selected_rank_name}** の野生の単語が現れた！(8匹)")
@@ -323,12 +315,10 @@ def main():
                 with st.spinner("草むらから単語を探しています..."):
                     rank_idx = rank_keys.index(selected_rank_name)
                     pid, pimg = get_random_pokemon_data(rank_idx)
-                    # DBフォールバック用に選択されたランク名を渡す
                     quiz_data = generate_quiz_words(api_key, RANK_MAP[selected_rank_name], selected_rank_name)
                     init_game(quiz_data, 30, mode="NORMAL", poke_id=pid, poke_img=pimg) 
                     st.rerun()
 
-    # B. プレイ中
     elif st.session_state.game_state == "PLAYING":
         col_info, col_img = st.columns([3, 1])
         with col_info:
@@ -403,7 +393,6 @@ def main():
                 st.session_state.flipped = []
                 st.rerun()
 
-    # C. 結果画面
     elif st.session_state.game_state == "FINISHED":
         st.header("🏆 バトル終了！")
         
@@ -449,19 +438,4 @@ def main():
                     st.rerun()
             with col2:
                 if st.button("残しておく"):
-                    st.session_state.mastered_pending = []
-                    st.rerun()
-
-        mistakes = st.session_state.mistakes_now
-        if mistakes and st.session_state.current_mode == "NORMAL":
-            st.error(f"今回のミス: {len(mistakes)} 匹")
-            if st.button("🔥 すぐに復習する"):
-                init_game(mistakes, 30, mode="REVENGE", poke_id=st.session_state.current_poke_id, poke_img=st.session_state.current_poke_img) 
-                st.rerun()
-        
-        if st.button("タイトルに戻る"):
-            st.session_state.game_state = "IDLE"
-            st.rerun()
-
-if __name__ == "__main__":
-    main()
+                    st.session_state

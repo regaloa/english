@@ -127,8 +127,6 @@ def generate_quiz_words(api_key, rank_prompt, rank_name_for_db):
 
     try:
         genai.configure(api_key=api_key)
-        
-        # ★最重要変更点: 最新モデル 'gemini-1.5-flash' を指定
         model = genai.GenerativeModel("gemini-1.5-flash")
         
         prompt = f"""
@@ -140,17 +138,12 @@ def generate_quiz_words(api_key, rank_prompt, rank_name_for_db):
         """
         
         response = model.generate_content(prompt)
-        
-        # クリーニング処理
-        text = response.text
-        text = text.replace("```json", "").replace("```", "").strip()
-        
+        text = response.text.replace("```json", "").replace("```", "").strip()
         return json.loads(text)
 
     except Exception as e:
-        st.error(f"⚠️ AIエラー発生: {e}")
-        st.warning("10秒後にオフラインモード（DB単語帳）に切り替わります...")
-        time.sleep(10)
+        print(f"AI Error: {e}") 
+        st.toast(f"⚠️ AI接続エラー: {e}")
         return get_fallback_words_from_db(rank_name_for_db)
 
 def get_english_story(api_key, words):
@@ -159,7 +152,6 @@ def get_english_story(api_key, words):
     
     try:
         genai.configure(api_key=api_key)
-        # ★こちらも gemini-1.5-flash に統一
         model = genai.GenerativeModel("gemini-1.5-flash")
         
         prompt = f"""
@@ -176,20 +168,27 @@ def get_english_story(api_key, words):
 
 # --- DB操作 ---
 
-def save_pokedex(poke_id):
+def save_pokedex(poke_id, poke_img_url):
+    """【修正】IDと画像URLを保存"""
     if not poke_id: return
     try:
         chk = supabase.table("user_pokedex").select("id").eq("pokemon_id", poke_id).execute()
         if not chk.data:
-            supabase.table("user_pokedex").insert({"pokemon_id": poke_id}).execute()
+            # 画像URLも一緒に保存
+            supabase.table("user_pokedex").insert({
+                "pokemon_id": poke_id,
+                "image_url": poke_img_url
+            }).execute()
             return True 
     except: pass
     return False
 
 def get_my_pokedex():
+    """【修正】IDと画像URLを取得"""
     try:
-        res = supabase.table("user_pokedex").select("pokemon_id").execute()
-        return [r["pokemon_id"] for r in res.data]
+        # image_url も取得する
+        res = supabase.table("user_pokedex").select("pokemon_id, image_url").execute()
+        return res.data # [{"pokemon_id": 25, "image_url": "http..."}, ...]
     except: return []
 
 def save_mistake(en, jp):
@@ -275,14 +274,21 @@ def main():
     m_count = get_mistakes_count()
     st.sidebar.error(f"💀 苦手な単語: {m_count} 語")
     
+    # ★図鑑表示部分の修正
     st.sidebar.divider()
     with st.sidebar.expander("📖 ポケモン図鑑 (Pokedex)"):
         my_pokedex = get_my_pokedex()
         if my_pokedex:
             st.write(f"現在の発見数: **{len(my_pokedex)}** 匹")
             cols = st.columns(3)
-            for i, pid in enumerate(my_pokedex):
-                img_url = f"[https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/](https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/){pid}.png"
+            for i, item in enumerate(my_pokedex):
+                # DBに保存された画像URLを使う
+                # (古いデータでURLがない場合はIDから生成するバックアップ処理)
+                pid = item["pokemon_id"]
+                img_url = item.get("image_url")
+                if not img_url:
+                    img_url = f"[https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/](https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/){pid}.png"
+                
                 with cols[i % 3]:
                     st.image(img_url, width=70)
         else:
@@ -377,8 +383,9 @@ def main():
                 st.session_state.flipped = []
                 if len(st.session_state.matched) * 2 == len(st.session_state.cards):
                     st.session_state.is_cleared = True
+                    # ★修正: 画像URLも渡して保存
                     if st.session_state.current_poke_id:
-                        is_new = save_pokedex(st.session_state.current_poke_id)
+                        is_new = save_pokedex(st.session_state.current_poke_id, st.session_state.current_poke_img)
                         st.session_state.is_new_discovery = is_new
                     st.session_state.game_state = "FINISHED"
                     st.rerun()

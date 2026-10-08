@@ -4,8 +4,8 @@ import random
 import time
 import json
 import requests
+import sqlite3
 import google.generativeai as genai
-from supabase import create_client
 
 # ==========================================
 # 0. アプリ基本設定
@@ -13,7 +13,7 @@ from supabase import create_client
 st.set_page_config(page_title="Pokémon English Battle", layout="wide")
 
 # ==========================================
-# 1. 設定 & 定数
+# 1. 設定 & 定数 & DB初期化
 # ==========================================
 RANK_MAP = {
     "モンスターボール級 (基礎: 400点)": "TOEIC score 350-450 level (Basic)",
@@ -29,26 +29,43 @@ RANK_TAGS = {
     "マスターボール級 (難関: 700点+)": "master"
 }
 
-# Secretsの読み込み確認
-try:
-    SUPABASE_URL = st.secrets["supabase"]["url"]
-    SUPABASE_KEY = st.secrets["supabase"]["key"]
-except:
-    st.error("⚠️ Secretsの設定が見つかりません。'.streamlit/secrets.toml' を確認してください。")
-    st.stop()
+# SQLite3 データベース設定
+DB_FILE = "pokemon_english.db"
 
-@st.cache_resource
-def init_supabase():
-    try:
-        return create_client(SUPABASE_URL, SUPABASE_KEY)
-    except Exception as e:
-        return None
+def init_db():
+    """必要なテーブルが存在しない場合は作成する"""
+    with sqlite3.connect(DB_FILE) as conn:
+        c = conn.cursor()
+        # フォールバック用の単語帳テーブル
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS toeic_words (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                word_en TEXT,
+                word_jp TEXT,
+                rank_level TEXT
+            )
+        ''')
+        # 図鑑テーブル
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS user_pokedex (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                pokemon_id INTEGER UNIQUE,
+                image_url TEXT
+            )
+        ''')
+        # 間違えた単語テーブル
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS mistaken_words (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                word_en TEXT UNIQUE,
+                word_jp TEXT,
+                correct_count INTEGER DEFAULT 0
+            )
+        ''')
+        conn.commit()
 
-supabase = init_supabase()
-
-if not supabase:
-    st.error("⚠️ データベースに接続できませんでした。")
-    st.stop()
+# アプリ起動時にDBを初期化
+init_db()
 
 # ==========================================
 # 2. 外部API & DB関数
@@ -92,26 +109,30 @@ def get_random_pokemon_data(rank_index):
     return None, None
 
 def get_fallback_words_from_db(rank_name):
-    """AIがない場合、DBから単語を取得する"""
+    """AIがない場合、SQLiteから単語を取得する"""
     target_level = RANK_TAGS.get(rank_name, "beginner")
     
     try:
-        res = supabase.table("toeic_words").select("word_en, word_jp").eq("rank_level", target_level).execute()
-        data = res.data
-        
-        # データ不足時は全データから補充
-        if len(data) < 8:
-            res_all = supabase.table("toeic_words").select("word_en, word_jp").execute()
-            data = res_all.data
+        with sqlite3.connect(DB_FILE) as conn:
+            conn.row_factory = sqlite3.Row
+            c = conn.cursor()
             
-        if data and len(data) >= 8:
-            selected = random.sample(data, 8)
-            return [{"en": item["word_en"], "jp": item["word_jp"]} for item in selected]
+            c.execute("SELECT word_en, word_jp FROM toeic_words WHERE rank_level = ?", (target_level,))
+            data = c.fetchall()
+            
+            # データ不足時は全データから補充
+            if len(data) < 8:
+                c.execute("SELECT word_en, word_jp FROM toeic_words")
+                data = c.fetchall()
+                
+            if data and len(data) >= 8:
+                selected = random.sample(data, 8)
+                return [{"en": item["word_en"], "jp": item["word_jp"]} for item in selected]
             
     except Exception:
         pass
     
-    # 最終手段
+    # 最終手段（DBにもデータがない場合）
     return [
         {"en": "Error", "jp": "エラー"},
         {"en": "Retry", "jp": "再読込"},
@@ -176,65 +197,90 @@ def get_english_story(api_key, words):
     except:
         return "Failed to generate story (AI Error)."
 
-# --- DB操作 ---
+# --- DB操作 (SQLite3版) ---
 
 def save_pokedex(poke_id, poke_img_url):
-    """【修正】IDと画像URLを保存"""
-    if not poke_id: return
+    """IDと画像URLを保存"""
+    if not poke_id: return False
     try:
-        chk = supabase.table("user_pokedex").select("id").eq("pokemon_id", poke_id).execute()
-        if not chk.data:
-            supabase.table("user_pokedex").insert({
-                "pokemon_id": poke_id,
-                "image_url": poke_img_url
-            }).execute()
-            return True 
+        with sqlite3.connect(DB_FILE) as conn:
+            c = conn.cursor()
+            c.execute("SELECT id FROM user_pokedex WHERE pokemon_id = ?", (poke_id,))
+            if not c.fetchone():
+                c.execute("INSERT INTO user_pokedex (pokemon_id, image_url) VALUES (?, ?)", (poke_id, poke_img_url))
+                conn.commit()
+                return True 
     except: pass
     return False
 
 def get_my_pokedex():
-    """【修正】IDと画像URLを取得"""
+    """IDと画像URLを取得"""
     try:
-        # image_url も取得する
-        res = supabase.table("user_pokedex").select("pokemon_id, image_url").execute()
-        return res.data # [{"pokemon_id": 25, "image_url": "http..."}, ...]
+        with sqlite3.connect(DB_FILE) as conn:
+            conn.row_factory = sqlite3.Row
+            c = conn.cursor()
+            c.execute("SELECT pokemon_id, image_url FROM user_pokedex")
+            return [{"pokemon_id": row["pokemon_id"], "image_url": row["image_url"]} for row in c.fetchall()]
     except: return []
 
 def save_mistake(en, jp):
+    """間違えた単語を保存"""
     try:
-        chk = supabase.table("mistaken_words").select("id").eq("word_en", en).execute()
-        if not chk.data:
-            supabase.table("mistaken_words").insert({"word_en": en, "word_jp": jp}).execute()
+        with sqlite3.connect(DB_FILE) as conn:
+            c = conn.cursor()
+            c.execute("SELECT id FROM mistaken_words WHERE word_en = ?", (en,))
+            if not c.fetchone():
+                c.execute("INSERT INTO mistaken_words (word_en, word_jp) VALUES (?, ?)", (en, jp))
+                conn.commit()
     except: pass
 
 def increment_correct_count(en):
+    """正解回数をカウントアップ"""
     try:
-        res = supabase.table("mistaken_words").select("correct_count").eq("word_en", en).execute()
-        if res.data:
-            new_val = res.data[0]["correct_count"] + 1
-            supabase.table("mistaken_words").update({"correct_count": new_val}).eq("word_en", en).execute()
-            return new_val
+        with sqlite3.connect(DB_FILE) as conn:
+            c = conn.cursor()
+            c.execute("SELECT correct_count FROM mistaken_words WHERE word_en = ?", (en,))
+            row = c.fetchone()
+            if row:
+                new_val = row[0] + 1
+                c.execute("UPDATE mistaken_words SET correct_count = ? WHERE word_en = ?", (new_val, en))
+                conn.commit()
+                return new_val
     except: pass
     return 0
 
 def delete_mistake(en):
+    """単語を削除"""
     try:
-        supabase.table("mistaken_words").delete().eq("word_en", en).execute()
+        with sqlite3.connect(DB_FILE) as conn:
+            c = conn.cursor()
+            c.execute("DELETE FROM mistaken_words WHERE word_en = ?", (en,))
+            conn.commit()
     except: pass
 
 def get_mistakes_count():
+    """間違えた単語の数を取得"""
     try:
-        res = supabase.table("mistaken_words").select("id", count="exact").execute()
-        return res.count
+        with sqlite3.connect(DB_FILE) as conn:
+            c = conn.cursor()
+            c.execute("SELECT COUNT(id) FROM mistaken_words")
+            return c.fetchone()[0]
     except: return 0
 
 def fetch_revenge_words(limit=8):
+    """復習用の単語を取得"""
     try:
-        res = supabase.table("mistaken_words").select("*").execute()
-        data = res.data
-        if not data: return []
-        random.shuffle(data)
-        return [{"en": i["word_en"], "jp": i["word_jp"], "count": i["correct_count"]} for i in data[:limit]]
+        with sqlite3.connect(DB_FILE) as conn:
+            conn.row_factory = sqlite3.Row
+            c = conn.cursor()
+            c.execute("SELECT word_en, word_jp, correct_count FROM mistaken_words")
+            data = c.fetchall()
+            
+            if not data: return []
+            
+            word_list = [{"en": row["word_en"], "jp": row["word_jp"], "count": row["correct_count"]} for row in data]
+            random.shuffle(word_list)
+            return word_list[:limit]
     except: return []
 
 # ==========================================
@@ -289,196 +335,4 @@ def main():
     with st.sidebar.expander("📖 ポケモン図鑑 (Pokedex)"):
         my_pokedex = get_my_pokedex()
         if my_pokedex:
-            st.write(f"現在の発見数: **{len(my_pokedex)}** 匹")
-            cols = st.columns(3)
-            for i, item in enumerate(my_pokedex):
-                # 辞書型かどうかチェック（新旧データ互換性のため）
-                if isinstance(item, dict):
-                    pid = item["pokemon_id"]
-                    img_url = item.get("image_url")
-                else:
-                    pid = item
-                    img_url = None
-
-                # 画像URLがない場合はIDから生成
-                if not img_url:
-                    img_url = f"https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/{pid}.png"
-                
-                with cols[i % 3]:
-                    st.image(img_url, width=70)
-        else:
-            st.info("まだポケモンを捕まえていません。")
-
-    # メイン画面
-    st.title("◓ ポケモン英単語ゲーム")
-    
-    if "game_state" not in st.session_state:
-        st.session_state.game_state = "IDLE"
-
-    # A. スタート画面
-    if st.session_state.game_state == "IDLE":
-        if "復習モード" in selected_rank_name:
-            if m_count == 0:
-                st.info("復習する単語はありません！")
-            else:
-                st.write(f"過去に逃げられた **{m_count}** 匹の単語が待っている...")
-                if st.button("リベンジバトル開始！", type="primary"):
-                    revenge_words = fetch_revenge_words(8)
-                    if not revenge_words:
-                        st.error("データ取得失敗")
-                    else:
-                        init_game(revenge_words, 40, mode="REVENGE", poke_id=132, poke_img="https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/132.png")
-                        st.rerun()
-        else:
-            st.write(f"**{selected_rank_name}** の野生の単語が現れた！(8匹)")
-            st.caption("※ すべてのカードを揃えると図鑑に登録されます")
-            if not api_key:
-                st.caption("⚠️ AIキー未設定: オフライン単語帳から出題されます")
-            
-            if st.button("バトル開始！ (Start)", type="primary"):
-                with st.spinner("草むらから単語を探しています..."):
-                    rank_idx = rank_keys.index(selected_rank_name)
-                    pid, pimg = get_random_pokemon_data(rank_idx)
-                    # DBフォールバック用に選択されたランク名を渡す
-                    quiz_data = generate_quiz_words(api_key, RANK_MAP[selected_rank_name], selected_rank_name)
-                    init_game(quiz_data, 30, mode="NORMAL", poke_id=pid, poke_img=pimg) 
-                    st.rerun()
-
-    # B. プレイ中
-    elif st.session_state.game_state == "PLAYING":
-        col_info, col_img = st.columns([3, 1])
-        with col_info:
-            if st.session_state.current_mode == "REVENGE":
-                st.warning("🔥 REVENGE BATTLE")
-            else:
-                st.info("野生の 英単語モンスター が勝負を仕掛けてきた！")
-                
-            elapsed = time.time() - st.session_state.start_time
-            remaining = st.session_state.time_limit - elapsed
-            st.progress(max(0.0, remaining / st.session_state.time_limit))
-            st.caption(f"残り時間: {remaining:.1f}秒")
-        
-        with col_img:
-            if st.session_state.current_poke_img:
-                st.image(st.session_state.current_poke_img, width=120)
-
-        if st.session_state.last_matched_word:
-            st.success(f"Nice! 🔊 {st.session_state.last_matched_word}")
-            play_pronunciation(st.session_state.last_matched_word)
-            st.session_state.last_matched_word = None
-
-        if remaining <= 0:
-            st.session_state.game_state = "FINISHED"
-            st.session_state.is_cleared = False
-            st.rerun()
-
-        cols = st.columns(4)
-        for i, card in enumerate(st.session_state.cards):
-            is_matched = card["id"] in st.session_state.matched
-            is_flipped = i in st.session_state.flipped
-            label = f"✨ {card['text']}" if is_matched else (card["text"] if is_flipped else "◓")
-
-            with cols[i % 4]:
-                if st.button(label, key=f"btn_{i}", disabled=is_matched):
-                    if not is_flipped and len(st.session_state.flipped) < 2:
-                        st.session_state.flipped.append(i)
-                        st.rerun()
-
-        if len(st.session_state.flipped) == 2:
-            idx1, idx2 = st.session_state.flipped
-            c1, c2 = st.session_state.cards[idx1], st.session_state.cards[idx2]
-
-            if c1["id"] == c2["id"]:
-                st.toast(f"Gotcha! {c1['id']}")
-                st.session_state.matched.add(c1["id"])
-                st.session_state.last_matched_word = c1["id"]
-                
-                if c1["id"] not in st.session_state.collected_now:
-                    st.session_state.collected_now.append(c1["id"])
-                    if st.session_state.current_mode == "REVENGE":
-                        if increment_correct_count(c1["id"]) >= 10:
-                            st.session_state.mastered_pending.append(c1["id"])
-                
-                st.session_state.flipped = []
-                if len(st.session_state.matched) * 2 == len(st.session_state.cards):
-                    st.session_state.is_cleared = True
-                    # ★修正: 画像URLも渡して保存
-                    if st.session_state.current_poke_id:
-                        is_new = save_pokedex(st.session_state.current_poke_id, st.session_state.current_poke_img)
-                        st.session_state.is_new_discovery = is_new
-                    st.session_state.game_state = "FINISHED"
-                    st.rerun()
-                time.sleep(0.5)
-                st.rerun()
-            else:
-                st.error(f"ああっ！逃げられた！ ({c1['text']} ≠ {c2['text']})")
-                if st.session_state.current_mode == "NORMAL":
-                    save_mistake(c1["id"], c1["pair"] if not c1["is_jp"] else c1["text"])
-                    if not any(m["en"] == c1["id"] for m in st.session_state.mistakes_now):
-                        st.session_state.mistakes_now.append({"en": c1["id"], "jp": c1["pair"] if not c1["is_jp"] else c1["text"]})
-                time.sleep(1.0)
-                st.session_state.flipped = []
-                st.rerun()
-
-    # C. 結果画面
-    elif st.session_state.game_state == "FINISHED":
-        st.header("🏆 ゲーム終了！")
-        
-        if st.session_state.is_cleared:
-            st.success("Congratulations! ステージクリア！")
-            if st.session_state.current_poke_img:
-                st.image(st.session_state.current_poke_img, width=120)
-                if st.session_state.is_new_discovery:
-                    st.balloons()
-                    st.success("🌟 やった！ 新しいポケモンを図鑑に登録しました！")
-                else:
-                    st.info("このポケモンはすでに登録済みです。")
-        else:
-            st.error("Time Up! 野生のポケモンは逃げ出してしまった...")
-            if st.session_state.current_poke_img:
-                st.image(st.session_state.current_poke_img, width=100, caption="逃げたポケモン")
-
-        st.divider()
-
-        if st.session_state.collected_now:
-            msg = "復習できた単語" if st.session_state.current_mode == "REVENGE" else "ゲットした単語"
-            st.write(f"**{msg}:** {', '.join(st.session_state.collected_now)}")
-            
-            st.subheader("📖 冒険の記録")
-            if st.button("記録を書く (Generate English Story)"):
-                with st.spinner("Writing story..."):
-                    story = get_english_story(api_key, st.session_state.collected_now)
-                    st.info(story)
-        else:
-            st.warning("単語を一匹も捕まえられなかった...")
-
-        pending = st.session_state.mastered_pending
-        if pending:
-            st.success(f"🎉 卒業候補: {', '.join(pending)}")
-            col1, col2 = st.columns(2)
-            with col1:
-                if st.button("✅ リストから削除して卒業"):
-                    for w in pending: delete_mistake(w)
-                    st.balloons()
-                    st.success("卒業しました！")
-                    st.session_state.mastered_pending = []
-                    time.sleep(2)
-                    st.rerun()
-            with col2:
-                if st.button("残しておく"):
-                    st.session_state.mastered_pending = []
-                    st.rerun()
-
-        mistakes = st.session_state.mistakes_now
-        if mistakes and st.session_state.current_mode == "NORMAL":
-            st.error(f"今回のミス: {len(mistakes)} 匹")
-            if st.button("🔥 すぐに復習する"):
-                init_game(mistakes, 30, mode="REVENGE", poke_id=st.session_state.current_poke_id, poke_img=st.session_state.current_poke_img) 
-                st.rerun()
-        
-        if st.button("タイトルに戻る"):
-            st.session_state.game_state = "IDLE"
-            st.rerun()
-
-if __name__ == "__main__":
-    main()
+            st.write(f"現在の発見数: **{len(my_pokedex)}**

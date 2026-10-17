@@ -33,10 +33,14 @@ RANK_TAGS = {
 DB_FILE = "pokemon_english.db"
 
 def init_db():
-    """必要なテーブルが存在しない場合は作成する"""
+    """必要なテーブルの作成、インデックス設定、初期データの投入を行う"""
     with sqlite3.connect(DB_FILE) as conn:
         c = conn.cursor()
-        # フォールバック用の単語帳テーブル
+        
+        # 1. パフォーマンス向上のためのWALモード有効化
+        c.execute("PRAGMA journal_mode=WAL;")
+
+        # 2. テーブル作成
         c.execute('''
             CREATE TABLE IF NOT EXISTS toeic_words (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -45,7 +49,6 @@ def init_db():
                 rank_level TEXT
             )
         ''')
-        # 図鑑テーブル
         c.execute('''
             CREATE TABLE IF NOT EXISTS user_pokedex (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -53,7 +56,6 @@ def init_db():
                 image_url TEXT
             )
         ''')
-        # 間違えた単語テーブル
         c.execute('''
             CREATE TABLE IF NOT EXISTS mistaken_words (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -62,6 +64,30 @@ def init_db():
                 correct_count INTEGER DEFAULT 0
             )
         ''')
+
+        # 3. 検索高速化のためのインデックス作成
+        c.execute('CREATE INDEX IF NOT EXISTS idx_toeic_rank ON toeic_words(rank_level);')
+        c.execute('CREATE INDEX IF NOT EXISTS idx_mistaken_word ON mistaken_words(word_en);')
+
+        # 4. toeic_words が空の場合、初期データを自動挿入（オフライン対策）
+        c.execute("SELECT COUNT(*) FROM toeic_words")
+        if c.fetchone()[0] == 0:
+            initial_words = [
+                ("Profit", "利益", "beginner"),
+                ("Hire", "雇う", "beginner"),
+                ("Schedule", "予定", "beginner"),
+                ("Client", "顧客", "beginner"),
+                ("Notice", "通知", "beginner"),
+                ("Invoice", "請求書", "intermediate"),
+                ("Strategy", "戦略", "intermediate"),
+                ("Expand", "拡大する", "intermediate"),
+                ("Negotiate", "交渉する", "advanced"),
+                ("Revenue", "歳入、収益", "advanced"),
+                ("Substitute", "代わりの", "advanced"),
+                ("Benchmark", "基準、指標", "master")
+            ]
+            c.executemany("INSERT INTO toeic_words (word_en, word_jp, rank_level) VALUES (?, ?, ?)", initial_words)
+
         conn.commit()
 
 # アプリ起動時にDBを初期化

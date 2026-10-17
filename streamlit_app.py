@@ -371,7 +371,6 @@ def main():
     
     rank_keys = list(RANK_MAP.keys())
     rank_options = rank_keys + ["🔥 復習モード (Revenge)"]
-    # ラジオボタンにしているため直接入力はできません
     selected_rank_name = st.sidebar.radio("挑戦するランク", rank_options)
     
     st.sidebar.divider()

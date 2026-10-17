@@ -13,7 +13,7 @@ import google.generativeai as genai
 st.set_page_config(page_title="Pokémon English Battle", layout="wide")
 
 # ==========================================
-# 1. 設定 & 定数 & DB初期化
+# 1. 設定 & 定数 & DB初期化（最適化版）
 # ==========================================
 RANK_MAP = {
     "モンスターボール級 (基礎: 400点)": "TOEIC score 350-450 level (Basic)",
@@ -113,16 +113,43 @@ def play_pronunciation(text):
     components.html(js_code, height=0)
 
 def get_random_pokemon_data(rank_index):
-    """PokeAPIからIDと画像を取得"""
+    """難易度（ランク）に応じて出現するポケモンの強さを変える"""
     try:
         if rank_index == 0:
-            poke_id = random.randint(1, 151)
+            # モンスターボール級：序盤のポケモン (1〜100)
+            poke_id = random.randint(1, 100)
         elif rank_index == 1:
-            poke_id = random.randint(152, 251)
+            # スーパーボール級：中盤のポケモン (101〜250)
+            poke_id = random.randint(101, 250)
         elif rank_index == 2:
-            poke_id = random.randint(252, 386)
+            # ハイパーボール級：強力な最終進化系ポケモンたち
+            hyper_ids = [6, 9, 3, 130, 149, 248, 257, 260, 376, 381, 445, 468, 609, 635, 701]
+            poke_id = random.choice(hyper_ids)
         else:
-            poke_id = random.randint(387, 1000) 
+            # マスターボール級：伝説・幻の最強ポケモンたち！
+            master_ids = [
+                150, # ミュウツー
+                249, # ルギア
+                250, # ホウオウ
+                382, # カイオーガ
+                383, # グラードン
+                384, # レックウザ
+                483, # ディアルガ
+                484, # パルキア
+                487, # ギラティナ
+                493, # アルセウス
+                643, # レシラム
+                644, # ゼクロム
+                646, # キュレム
+                716, # ゼルネアス
+                717, # イベルタル
+                800, # ネクロズマ
+                888, # ザシアン
+                890, # ムゲンダイナ
+                1007, # コライドン
+                1008  # ミライドン
+            ]
+            poke_id = random.choice(master_ids)
 
         url = f"https://pokeapi.co/api/v2/pokemon/{poke_id}"
         res = requests.get(url, timeout=3)
@@ -158,7 +185,6 @@ def get_fallback_words_from_db(rank_name):
     except Exception:
         pass
     
-    # 最終手段（DBにもデータがない場合）
     return [
         {"en": "Error", "jp": "エラー"},
         {"en": "Retry", "jp": "再読込"},
@@ -177,8 +203,6 @@ def generate_quiz_words(api_key, rank_prompt, rank_name_for_db):
 
     try:
         genai.configure(api_key=api_key)
-        
-        # モデル指定
         model = genai.GenerativeModel("gemini-pro")
         
         prompt = f"""
@@ -189,15 +213,12 @@ def generate_quiz_words(api_key, rank_prompt, rank_name_for_db):
         Just the raw JSON string without markdown code blocks.
         """
         response = model.generate_content(prompt)
-        
-        # AIが余計な文字をつけてきた場合に掃除する処理
         text = response.text
         text = text.replace("```json", "").replace("```", "").strip()
         
         return json.loads(text)
 
     except Exception as e:
-        # エラー時は静かにDBモードへ切り替え
         st.error(f"⚠️ AIエラー発生: {e}")
         st.warning("10秒後にオフラインモード（DB単語帳）に切り替わります...")
         time.sleep(10)
@@ -350,13 +371,14 @@ def main():
     
     rank_keys = list(RANK_MAP.keys())
     rank_options = rank_keys + ["🔥 復習モード (Revenge)"]
-    selected_rank_name = st.sidebar.selectbox("挑戦するランク", rank_options)
+    # ラジオボタンにしているため直接入力はできません
+    selected_rank_name = st.sidebar.radio("挑戦するランク", rank_options)
     
     st.sidebar.divider()
     m_count = get_mistakes_count()
     st.sidebar.error(f"💀 苦手な単語: {m_count} 語")
     
-    # 図鑑 (画像URL対応版)
+    # 図鑑
     st.sidebar.divider()
     with st.sidebar.expander("📖 ポケモン図鑑 (Pokedex)"):
         my_pokedex = get_my_pokedex()
@@ -367,7 +389,6 @@ def main():
                 pid = item["pokemon_id"]
                 img_url = item.get("image_url")
 
-                # 画像URLがない場合はIDから生成
                 if not img_url:
                     img_url = f"https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/{pid}.png"
                 
@@ -398,16 +419,15 @@ def main():
                         st.rerun()
         else:
             st.write(f"**{selected_rank_name}** の野生の単語が現れた！(8匹)")
-            st.caption("※ すべてのカードを揃えると図鑑に登録されます")
+            st.caption("※ すべてのカードを揃えると図鑑に登録されます (高難易度ほど強力なポケモンが出現！)")
             if not api_key:
                 st.caption("⚠️ AIキー未設定: オフライン単語帳から出題されます")
             
             if st.button("バトル開始！ (Start)", type="primary"):
-                with st.spinner("草むらから単語を探しています..."):
-                    rank_idx = rank_keys.index(selected_rank_name)
+                with st.spinner("草むらから強力なポケモンを探しています..."):
+                    rank_idx = rank_keys.index(selected_rank_name) if selected_rank_name in rank_keys else 0
                     pid, pimg = get_random_pokemon_data(rank_idx)
-                    # DBフォールバック用に選択されたランク名を渡す
-                    quiz_data = generate_quiz_words(api_key, RANK_MAP[selected_rank_name], selected_rank_name)
+                    quiz_data = generate_quiz_words(api_key, RANK_MAP.get(selected_rank_name, RANK_MAP[rank_keys[0]]), selected_rank_name)
                     init_game(quiz_data, 30, mode="NORMAL", poke_id=pid, poke_img=pimg) 
                     st.rerun()
 
@@ -496,7 +516,7 @@ def main():
                 st.image(st.session_state.current_poke_img, width=120)
                 if st.session_state.is_new_discovery:
                     st.balloons()
-                    st.success("🌟 やった！ 新しいポケモンを図鑑に登録しました！")
+                    st.success("🌟 やった！ 新しい強力なポケモンを図鑑に登録しました！")
                 else:
                     st.info("このポケモンはすでに登録済みです。")
         else:

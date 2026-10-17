@@ -320,7 +320,7 @@ def fetch_revenge_words(limit=8):
         with sqlite3.connect(DB_FILE) as conn:
             conn.row_factory = sqlite3.Row
             c = conn.cursor()
-            c.execute("SELECT word_en, word_jp, correct_count FROM mistaken_words")
+            c.execute("SELECT word_en, word_jp, correct_count FROM mistaken_words LIMIT 5")
             data = c.fetchall()
             
             if not data: return []
